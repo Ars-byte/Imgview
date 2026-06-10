@@ -1,26 +1,3 @@
-/*
- * imgview — Terminal Image Viewer
- * Renders images using Unicode half-block characters (▄) and 24-bit ANSI color.
- * Each terminal cell shows two pixels (top=background, bottom=foreground).
- *
- * Supported formats: JPEG, PNG, BMP, GIF (first frame), TGA, PNM, HDR, PIC
- *
- * Compile:
- *   g++ -O2 -o imgview imgview.cpp -lm
- *
- * Usage:
- *   imgview [options] <image_file> [image_file2 ...]
- *
- * Options:
- *   -w <cols>     Force output width  (default: terminal width)
- *   -h <rows>     Force output height (default: auto, keep aspect ratio)
- *   -d            Dithering mode (Floyd–Steinberg, for low-color terminals)
- *   -g            Grayscale mode
- *   -i            Info only — print metadata, don't render
- *   -s <seconds>  Slideshow delay between images (default: 0 = wait for Enter)
- *   --help        Show this help
- */
-
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
 
@@ -45,8 +22,6 @@
 #  include <termios.h>
 #endif
 
-// ─── ANSI helpers ────────────────────────────────────────────────────────────
-
 static void set_fg(unsigned r, unsigned g, unsigned b) {
     printf("\033[38;2;%u;%u;%um", r, g, b);
 }
@@ -69,8 +44,6 @@ static void move_to(int row, int col) {
     printf("\033[%d;%dH", row, col);
 }
 
-// ─── Terminal size ────────────────────────────────────────────────────────────
-
 struct TermSize { int cols, rows; };
 
 static TermSize get_term_size() {
@@ -87,7 +60,6 @@ static TermSize get_term_size() {
     return { 80, 24 };
 }
 
-// ─── Image pixel access ───────────────────────────────────────────────────────
 
 struct Pixel { unsigned char r, g, b, a; };
 
@@ -103,7 +75,6 @@ static Pixel get_pixel(const unsigned char* data, int x, int y,
     return px;
 }
 
-// Bilinear sample at float coords
 static Pixel sample_bilinear(const unsigned char* data, float fx, float fy,
                               int width, int height, int channels) {
     int x0 = (int)fx, y0 = (int)fy;
@@ -127,14 +98,12 @@ static Pixel sample_bilinear(const unsigned char* data, float fx, float fy,
     };
 }
 
-// ─── Grayscale ────────────────────────────────────────────────────────────────
 
 static Pixel to_gray(Pixel p) {
     unsigned char g = (unsigned char)(0.2126*p.r + 0.7152*p.g + 0.0722*p.b);
     return { g, g, g, p.a };
 }
 
-// ─── Blend pixel with checkerboard background (for transparent images) ────────
 
 static Pixel blend_checker(Pixel p, int cx, int cy) {
     if (p.a == 255) return p;
@@ -148,7 +117,6 @@ static Pixel blend_checker(Pixel p, int cx, int cy) {
     };
 }
 
-// ─── Render ───────────────────────────────────────────────────────────────────
 
 struct RenderOptions {
     int  out_cols   = 0;   // 0 = auto
@@ -164,15 +132,13 @@ static void render_image(const unsigned char* data,
     TermSize ts = get_term_size();
 
     int max_cols = ts.cols;
-    int max_rows = ts.rows - 1;  // leave 1 row so terminal doesn't scroll
+    int max_rows = ts.rows - 1;
 
     int out_cols = opt.out_cols > 0 ? opt.out_cols : max_cols;
     int out_rows = opt.out_rows > 0 ? opt.out_rows : 0;
 
-    // Keep aspect ratio (terminal cells are ~2× taller than wide)
     if (out_rows == 0) {
         double aspect = (double)img_w / (double)img_h;
-        // each col ≈ 1 unit wide, each cell ≈ 2 pixel rows tall
         out_rows = (int)((out_cols / aspect) / 2.0);
         if (out_rows > max_rows) {
             out_rows = max_rows;
@@ -184,13 +150,9 @@ static void render_image(const unsigned char* data,
     out_cols = std::max(1, out_cols);
     out_rows = std::max(1, out_rows);
 
-    // Scale factors
     float sx = (float)(img_w - 1) / (float)(out_cols - 1 + 1e-9f);
     float sy = (float)(img_h - 1) / (float)(out_rows * 2 - 1 + 1e-9f);
 
-    // ── Floyd–Steinberg error buffer ──────────────────────────────────────────
-    // Only used when opt.dither is true.
-    // Quantise to a 6×6×6 colour cube (216 colours).
     struct Err { float r, g, b; };
     std::vector<Err> err_cur(out_cols + 2, {0,0,0});
     std::vector<Err> err_nxt(out_cols + 2, {0,0,0});
@@ -207,8 +169,6 @@ static void render_image(const unsigned char* data,
         }
 
         for (int col = 0; col < out_cols; ++col) {
-            // top pixel  → background color
-            // bottom pixel → foreground color
             float fy_top = row * 2 * sy;
             float fy_bot = (row * 2 + 1) * sy;
             float fx     = col * sx;
@@ -222,13 +182,13 @@ static void render_image(const unsigned char* data,
             if (opt.grayscale) { top = to_gray(top); bot = to_gray(bot); }
 
             if (opt.dither) {
-                // Apply accumulated error to top pixel
+
                 float tr = std::min(255.0f, std::max(0.0f, top.r + err_cur[col+1].r));
                 float tg = std::min(255.0f, std::max(0.0f, top.g + err_cur[col+1].g));
                 float tb = std::min(255.0f, std::max(0.0f, top.b + err_cur[col+1].b));
                 unsigned char qr = quant6(tr), qg = quant6(tg), qb = quant6(tb);
                 float er = tr - qr, eg = tg - qg, eb = tb - qb;
-                // Distribute error (simplified, horizontal only for top)
+
                 if (col + 2 < (int)err_cur.size()) {
                     err_cur[col+2].r += er * 7/16.0f;
                     err_nxt[col  ].r += er * 3/16.0f;
@@ -245,7 +205,6 @@ static void render_image(const unsigned char* data,
                 }
                 top.r = qr; top.g = qg; top.b = qb;
 
-                // Same for bottom pixel using err_nxt as current
                 float br2 = std::min(255.0f, std::max(0.0f, bot.r + err_nxt[col+1].r));
                 float bg2 = std::min(255.0f, std::max(0.0f, bot.g + err_nxt[col+1].g));
                 float bb2 = std::min(255.0f, std::max(0.0f, bot.b + err_nxt[col+1].b));
@@ -254,7 +213,6 @@ static void render_image(const unsigned char* data,
 
             set_bg(top.r, top.g, top.b);
             set_fg(bot.r, bot.g, bot.b);
-            // U+2584 LOWER HALF BLOCK — top half = bg, bottom half = fg
             printf("\xe2\x96\x84");
         }
         reset_colors();
@@ -264,7 +222,6 @@ static void render_image(const unsigned char* data,
     }
 }
 
-// ─── Info printer ─────────────────────────────────────────────────────────────
 
 static const char* channel_name(int c) {
     switch (c) {
@@ -283,15 +240,12 @@ static void print_info(const char* path, int w, int h, int ch) {
     printf("  Memory   : %.1f KB\n", (double)(w * h * ch) / 1024.0);
 }
 
-// ─── Status bar ──────────────────────────────────────────────────────────────
 
 static void print_status(const char* path, int w, int h, int ch,
                          int index, int total,
                          const RenderOptions& opt) {
     TermSize ts = get_term_size();
-    // Move to last row
     move_to(ts.rows, 1);
-    // Dark background status bar
     printf("\033[48;2;30;30;30m\033[38;2;200;200;200m");
 
     char buf[512];
@@ -302,7 +256,6 @@ static void print_status(const char* path, int w, int h, int ch,
              opt.grayscale ? "  [gray]" : "",
              opt.dither    ? "  [dither]" : "");
 
-    // Pad/truncate to terminal width
     int len = (int)strlen(buf);
     printf("%.*s", ts.cols, buf);
     for (int i = len; i < ts.cols; ++i) putchar(' ');
@@ -310,7 +263,6 @@ static void print_status(const char* path, int w, int h, int ch,
     fflush(stdout);
 }
 
-// ─── Wait for keypress ────────────────────────────────────────────────────────
 
 #ifndef _WIN32
 static char read_key() {
@@ -327,7 +279,6 @@ static char read_key() {
 static char read_key() { return (char)_getch(); }
 #endif
 
-// ─── Argument parsing ─────────────────────────────────────────────────────────
 
 static void print_help(const char* prog) {
     printf(
@@ -348,7 +299,6 @@ static void print_help(const char* prog) {
         prog);
 }
 
-// ─── Main ─────────────────────────────────────────────────────────────────────
 
 int main(int argc, char* argv[]) {
     RenderOptions opt;
@@ -417,32 +367,27 @@ int main(int argc, char* argv[]) {
 
         fflush(stdout);
 
-        // ── Navigation ────────────────────────────────────────────────────────
         if (total == 1 && slide_secs <= 0) {
-            // Single image: just wait for any key then exit
             read_key();
             quit = true;
         } else if (slide_secs > 0) {
-            // Slideshow with timer
             std::this_thread::sleep_for(
                 std::chrono::milliseconds((int)(slide_secs * 1000)));
             current = (current + 1) % total;
-            if (current == 0) quit = true; // one pass through all images
+            if (current == 0) quit = true;
         } else {
-            // Manual navigation
             while (true) {
                 char k = read_key();
                 if (k == 'q' || k == 'Q' || k == 27 /* ESC */) {
                     quit = true; break;
                 }
-                // Arrow keys send ESC [ A/B/C/D
                 if (k == '\033') {
                     char k2 = read_key();
                     if (k2 == '[') {
                         char k3 = read_key();
-                        if (k3 == 'C' || k3 == 'B') {  // right / down → next
+                        if (k3 == 'C' || k3 == 'B') {
                             current = (current + 1) % total; break;
-                        } else if (k3 == 'D' || k3 == 'A') { // left / up → prev
+                        } else if (k3 == 'D' || k3 == 'A') {
                             current = (current - 1 + total) % total; break;
                         }
                     }
